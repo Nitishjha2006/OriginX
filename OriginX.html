@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OriginX</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+:root{--bg:#eef2f6;--card:#fff;--ink:#14212b;--mute:#5b6b78;--line:#cfd8e0;--seal:#0f766e;--warn:#b45309;--bad:#b3261e;--sans:'IBM Plex Sans',system-ui,sans-serif;--mono:'IBM Plex Mono',ui-monospace,monospace;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#101a22;--card:#17242e;--ink:#e6edf2;--mute:#92a3b0;--line:#2b3b47;--seal:#34d1c0;--warn:#f0a35a;--bad:#ff8a80}}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--sans)}
+main{max-width:640px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:30px;margin:8px 0 4px;letter-spacing:-.5px}
+h1 span{color:var(--seal)}
+p.sub{color:var(--mute);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+h2{font-size:16px;margin:0 0 10px;font-weight:600}
+button,.btn{font:600 16px var(--sans);background:var(--seal);color:#fff;border:0;border-radius:8px;padding:12px 16px;width:100%;cursor:pointer}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) button,:root:not([data-theme="light"]) .btn{color:#06201d}}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line);margin-top:8px}
+button:disabled{opacity:.45}
+:focus-visible{outline:3px solid var(--warn);outline-offset:2px}
+#pick{position:relative;overflow:hidden}
+#pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:100px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.row:first-of-type{border-top:0}
+.row b{font-weight:600}.row span{color:var(--mute);text-align:right;word-break:break-all}
+.mono{font-family:var(--mono);font-size:12px;word-break:break-all}
+.verdict{border-left:6px solid var(--mute);padding:4px 0 4px 12px}
+.verdict.ok{border-color:var(--seal)}.verdict.mid{border-color:var(--warn)}.verdict.bad{border-color:var(--bad)}
+.verdict h3{margin:0;font-size:20px}
+.meter{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:8px 0}
+.meter i{display:block;height:100%;width:0;background:var(--warn);transition:width .4s}
+textarea{width:100%;min-height:90px;font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px}
+.note{font-size:13px;color:var(--mute)}
+video,canvas{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Origin<span>X</span></h1>
+<p class="sub">Check where a video came from and whether it’s been altered.</p>
+
+<div class="card">
+<h2>1. Choose a video</h2>
+<label class="btn" id="pick" style="display:block;text-align:center">Select video file
+<input type="file" id="file" accept="video/*,.mp4,.mov,.m4v,.webm"></label>
+<p class="note" id="fname">Nothing selected. Your video stays on this device.</p>
+</div>
+
+<div class="card" id="res" hidden>
+<h2>2. Result</h2>
+<div class="verdict" id="verdict"><h3>Analyzing…</h3><div class="note" id="vtext"></div></div>
+<div class="meter"><i id="bar"></i></div>
+<div id="rows"></div>
+</div>
+
+<div class="card" id="seal" hidden>
+<h2>3. Seal and verify</h2>
+<p class="note">Sealing signs this file’s fingerprint with a new key made on your device. Later, paste the seal to prove the file hasn’t changed.</p>
+<button id="sign">Create seal</button>
+<textarea id="rec" placeholder="Seal appears here. Paste a seal here to verify the selected file." spellcheck="false"></textarea>
+<button class="alt" id="verify">Verify file against seal</button>
+<p class="note" id="vout"></p>
+</div>
+
+<p class="note">OriginX starter build. The forensic score is a simple demo heuristic, not proof. A trained detection model replaces it in the next step.</p>
+</main>
+<video id="v" muted playsinline preload="auto"></video><canvas id="c"></canvas>
+
+<script>
+const $=id=>document.getElementById(id);
+let current=null, hashHex='';
+const hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const row=(k,v)=>`<div class="row"><b>${k}</b><span>${v}</span></div>`;
+
+$('file').addEventListener('change',e=>{const f=e.target.files[0];if(f)analyze(f)});
+
+async function analyze(file){
+  current=file;
+  $('fname').textContent=file.name+' ('+(file.size/1048576).toFixed(1)+' MB)';
+  $('res').hidden=false;$('seal').hidden=false;$('vout').textContent='';
+  setVerdict('Analyzing…','','',0);$('rows').innerHTML='';
+  if(file.size>400*1048576){setVerdict('File too large','Pick a video under 400 MB for this build.','bad',0);return}
+  const buf=await file.arrayBuffer();
+  hashHex=hex(await crypto.subtle.digest('SHA-256',buf));
+  const prov=scanProvenance(buf);
+  let rows=row('SHA-256 fingerprint','<span class="mono">'+hashHex+'</span>');
+  rows+=row('Content Credentials (C2PA)',prov.c2pa?'Found':'Not found');
+  rows+=row('Generator hints',prov.hints.length?prov.hints.join(', '):'None');
+  $('rows').innerHTML=rows;
+  let f=null;
+  try{f=await forensics(file)}catch(err){rows+=row('Frame analysis','Could not read frames')}
+  if(f){rows+=row('Brightness shimmer',f.jitter.toFixed(2));rows+=row('Sharpness variation',f.cv.toFixed(2));rows+=row('Frames sampled',f.n)}
+  $('rows').innerHTML=rows;
+  decide(prov,f);
+}
+
+function scanProvenance(buf){
+  const bytes=new Uint8Array(buf,0,Math.min(buf.byteLength,24*1048576));
+  const text=new TextDecoder('latin1').decode(bytes).toLowerCase();
+  const c2pa=text.includes('c2pa')||text.includes('contentauth');
+  const names=['sora','runway','pika','kling','synthesia','heygen','luma','veo','stable video','deepfacelab','faceswap','wav2lip'];
+  const hints=names.filter(n=>new RegExp('(^|[^a-z])'+n+'([^a-z]|$)').test(text));
+  return{c2pa,hints};
+}
+
+async function forensics(file){
+  const v=$('v'),c=$('c'),ctx=c.getContext('2d',{willReadFrequently:true});
+  const url=URL.createObjectURL(file);v.src=url;
+  await new Promise((ok,no)=>{v.onloadedmetadata=ok;v.onerror=no});
+  const W=128,H=72;c.width=W;c.height=H;
+  const dur=isFinite(v.duration)?v.duration:1;
+  const step=Math.min(0.1,dur/30),start=Math.min(dur*0.1,Math.max(0,dur-step*26));
+  const bright=[],sharp=[];
+  for(let i=0;i<24;i++){
+    v.currentTime=start+i*step;
+    await new Promise(ok=>{v.onseeked=ok;setTimeout(ok,1500)});
+    ctx.drawImage(v,0,0,W,H);
+    const d=ctx.getImageData(0,0,W,H).data,g=new Float32Array(W*H);
+    let sum=0;
+    for(let p=0;p<W*H;p++){g[p]=0.299*d[p*4]+0.587*d[p*4+1]+0.114*d[p*4+2];sum+=g[p]}
+    bright.push(sum/(W*H));
+    let m=0,m2=0,k=0;
+    for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+      const q=y*W+x,l=4*g[q]-g[q-1]-g[q+1]-g[q-W]-g[q+W];
+      m+=l;m2+=l*l;k++}
+    sharp.push(m2/k-(m/k)**2);
+  }
+  URL.revokeObjectURL(url);
+  let j=0;for(let i=1;i<bright.length-1;i++)j+=Math.abs(bright[i-1]-2*bright[i]+bright[i+1]);
+  j/=bright.length-2;
+  const mean=sharp.reduce((a,b)=>a+b,0)/sharp.length;
+  const sd=Math.sqrt(sharp.reduce((a,b)=>a+(b-mean)**2,0)/sharp.length);
+  return{jitter:j,cv:mean?sd/mean:0,n:bright.length};
+}
+
+function decide(prov,f){
+  let risk=f?Math.min(100,Math.round(f.jitter*10+f.cv*120)):50;
+  if(prov.hints.length)risk=Math.max(risk,70);
+  if(prov.c2pa){
+    setVerdict('Provenance found','This file carries Content Credentials. Full signature validation comes in the next build, so treat this as a strong lead, not a final check.','ok',Math.min(risk,25));
+  }else if(risk>=65){
+    setVerdict('High risk','No provenance data, and the frames show signs often seen in generated or edited video. Verify the source before trusting it.','bad',risk);
+  }else if(risk>=35){
+    setVerdict('Unclear','No provenance data and mixed signals. Ask the sender for the original file.','mid',risk);
+  }else{
+    setVerdict('No obvious signs','No provenance data, but the frames look steady. This does not prove the video is real.','mid',risk);
+  }
+}
+function setVerdict(t,x,cls,score){
+  $('verdict').className='verdict '+(cls||'');
+  $('verdict').querySelector('h3').textContent=t;$('vtext').textContent=x;
+  $('bar').style.width=score+'%';
+  $('bar').style.background=cls==='ok'?'var(--seal)':cls==='bad'?'var(--bad)':'var(--warn)';
+}
+
+$('sign').onclick=async()=>{
+  if(!hashHex)return;
+  const kp=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const payload={file:current.name,sha256:hashHex,signedAt:new Date().toISOString()};
+  const sig=await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},kp.privateKey,new TextEncoder().encode(JSON.stringify(payload)));
+  const pub=await crypto.subtle.exportKey('jwk',kp.publicKey);
+  $('rec').value=JSON.stringify({payload,signature:hex(sig),publicKey:pub},null,1);
+  $('vout').textContent='Seal created. Copy it and keep it somewhere safe.';
+};
+$('verify').onclick=async()=>{
+  const o=$('vout');
+  try{
+    const r=JSON.parse($('rec').value);
+    const key=await crypto.subtle.importKey('jwk',r.publicKey,{name:'ECDSA',namedCurve:'P-256'},false,['verify']);
+    const sig=new Uint8Array(r.signature.match(/../g).map(h=>parseInt(h,16)));
+    const ok=await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},key,sig,new TextEncoder().encode(JSON.stringify(r.payload)));
+    if(!ok)o.textContent='Seal is invalid. The record was edited or is not genuine.';
+    else if(r.payload.sha256!==hashHex)o.textContent='Seal is genuine, but this file does not match it. The video has changed.';
+    else o.textContent='Match. This file is identical to the one that was sealed.';
+  }catch(e){o.textContent='Could not read that seal. Paste the full text.'}
+};
+</script>
+</body>
+</html>
